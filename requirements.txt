@@ -1,0 +1,63 @@
+# Carrier Cost Agent - Python Dependencies
+
+# Web Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Database
+sqlalchemy==2.0.25
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# Pydantic (data validation)
+pydantic==2.6.1
+pydantic-settings==2.1.0
+email-validator==2.1.0.post1
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+httpx==0.26.0
+
+# PDF Processing
+pypdf2==3.0.1
+pdfplumber==0.10.3
+pdf2image==1.17.0
+pytesseract==0.3.10
+Pillow==10.2.0
+
+# GenAI / LLM
+anthropic==0.18.1
+openai==1.12.0
+tiktoken==0.6.0
+
+# Job Queue
+redis==5.0.1
+rq==1.16.0
+celery==5.3.6
+
+# Data Processing
+pandas==2.2.0
+numpy==1.26.4
+python-dateutil==2.8.2
+
+# Utilities
+python-dotenv==1.0.1
+aiofiles==23.2.1
+orjson==3.9.13
+tenacity==8.2.3
+
+# Logging & Monitoring
+structlog==24.1.0
+python-json-logger==2.0.7
+
+# HTTP Client
+requests==2.31.0
+
+# CSV/JSON handling
+openpyxl==3.1.2
+
+# UUID handling
+uuid6==2024.1.12
