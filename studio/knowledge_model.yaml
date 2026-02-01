@@ -1,0 +1,379 @@
+# Celonis Knowledge Model for Carrier Cost Agent
+# This file defines the data model, KPIs, and process views for Celonis Studio
+
+name: Carrier Cost Agent
+description: |
+  AI-powered carrier invoice validation and cost recovery solution.
+  Detects billing anomalies, validates against contracts, and automates claim generation.
+
+version: "1.0.0"
+created: 2026-02-01
+updated: 2026-02-01
+
+# =============================================================================
+# DATA MODEL
+# =============================================================================
+data_model:
+  name: carrier_cost_agent_model
+  description: Core data model for carrier invoice validation
+
+  tables:
+    - name: carrier
+      description: Carrier master data (FedEx, UPS, etc.)
+      primary_key: carrier_id
+      columns:
+        - carrier_id
+        - name
+        - code
+        - portal_url
+        - contact_email
+        - is_active
+
+    - name: contract
+      description: Carrier contract metadata
+      primary_key: contract_id
+      foreign_keys:
+        - column: carrier_id
+          references: carrier.carrier_id
+      columns:
+        - contract_id
+        - carrier_id
+        - contract_number
+        - effective_date
+        - expiration_date
+        - parsing_status
+        - version
+        - is_active
+
+    - name: contract_term
+      description: Extracted contract terms (rates, surcharges, SLAs)
+      primary_key: term_id
+      foreign_keys:
+        - column: contract_id
+          references: contract.contract_id
+      columns:
+        - term_id
+        - contract_id
+        - term_type
+        - service_level
+        - zone
+        - rate
+        - rate_type
+        - confidence_score
+        - validated
+
+    - name: invoice
+      description: Carrier invoice headers
+      primary_key: invoice_id
+      foreign_keys:
+        - column: carrier_id
+          references: carrier.carrier_id
+      columns:
+        - invoice_id
+        - carrier_id
+        - invoice_number
+        - invoice_date
+        - total_amount
+        - processing_status
+
+    - name: invoice_line
+      description: Invoice line items
+      primary_key: line_id
+      foreign_keys:
+        - column: invoice_id
+          references: invoice.invoice_id
+        - column: shipment_id
+          references: shipment.shipment_id
+      columns:
+        - line_id
+        - invoice_id
+        - shipment_id
+        - charge_type
+        - amount
+        - service_level
+        - zone
+
+    - name: shipment
+      description: Shipment data from TMS
+      primary_key: shipment_id
+      foreign_keys:
+        - column: carrier_id
+          references: carrier.carrier_id
+      columns:
+        - shipment_id
+        - carrier_id
+        - pro_number
+        - tracking_number
+        - service_level
+        - ship_date
+        - expected_delivery
+        - actual_delivery
+
+    - name: anomaly
+      description: Detected billing anomalies
+      primary_key: anomaly_id
+      foreign_keys:
+        - column: line_id
+          references: invoice_line.line_id
+        - column: contract_term_id
+          references: contract_term.term_id
+      columns:
+        - anomaly_id
+        - line_id
+        - anomaly_type
+        - expected_amount
+        - actual_amount
+        - variance
+        - confidence_score
+        - status
+
+    - name: claim
+      description: Carrier dispute claims
+      primary_key: claim_id
+      foreign_keys:
+        - column: anomaly_id
+          references: anomaly.anomaly_id
+      columns:
+        - claim_id
+        - anomaly_id
+        - claim_number
+        - status
+        - requested_credit
+        - credit_amount
+        - outcome
+
+    - name: claim_message
+      description: Claim conversation history
+      primary_key: message_id
+      foreign_keys:
+        - column: claim_id
+          references: claim.claim_id
+      columns:
+        - message_id
+        - claim_id
+        - direction
+        - message_type
+        - content
+
+# =============================================================================
+# KEY PERFORMANCE INDICATORS
+# =============================================================================
+kpis:
+  # Recovery Metrics
+  - name: Total Identified
+    description: Total variance amount of all detected anomalies
+    formula: SUM(anomaly.variance)
+    filters:
+      - anomaly.status IN ('detected', 'validated', 'disputed')
+    format: currency
+    unit: USD
+
+  - name: Total Submitted
+    description: Total requested credit for submitted claims
+    formula: SUM(claim.requested_credit)
+    filters:
+      - claim.status IN ('submitted', 'in_progress', 'won', 'lost')
+    format: currency
+    unit: USD
+
+  - name: Total Recovered
+    description: Total credit amount from won claims
+    formula: SUM(claim.credit_amount)
+    filters:
+      - claim.status = 'won'
+    format: currency
+    unit: USD
+
+  - name: Recovery Rate
+    description: Percentage of submitted claims that resulted in recovery
+    formula: (Total Recovered / Total Submitted) * 100
+    format: percentage
+    unit: "%"
+
+  - name: Win Rate
+    description: Percentage of resolved claims that were won
+    formula: (COUNT(claim WHERE status='won') / COUNT(claim WHERE status IN ('won', 'lost'))) * 100
+    format: percentage
+    unit: "%"
+
+  # Volume Metrics
+  - name: Total Anomalies
+    description: Count of all detected anomalies
+    formula: COUNT(anomaly.anomaly_id)
+    format: number
+
+  - name: Total Claims
+    description: Count of all claims
+    formula: COUNT(claim.claim_id)
+    format: number
+
+  - name: Invoices Processed
+    description: Count of processed invoices
+    formula: COUNT(invoice.invoice_id)
+    filters:
+      - invoice.processing_status = 'completed'
+    format: number
+
+  # Efficiency Metrics
+  - name: Average Confidence Score
+    description: Average confidence of detected anomalies
+    formula: AVG(anomaly.confidence_score)
+    format: percentage
+    unit: "%"
+
+  - name: Anomalies per Invoice
+    description: Average number of anomalies per processed invoice
+    formula: Total Anomalies / Invoices Processed
+    format: decimal
+
+# =============================================================================
+# PROCESS VIEWS
+# =============================================================================
+process_views:
+  - name: Claim Lifecycle
+    description: Track claims through their lifecycle stages
+    case_table: claim
+    case_id: claim_id
+    activity_table: claim_status_changes
+    activities:
+      - name: Draft Created
+        filter: status = 'draft'
+      - name: Pending Approval
+        filter: status = 'pending_approval'
+      - name: Submitted
+        filter: status = 'submitted'
+      - name: In Progress
+        filter: status = 'in_progress'
+      - name: Won
+        filter: status = 'won'
+      - name: Lost
+        filter: status = 'lost'
+      - name: Withdrawn
+        filter: status = 'withdrawn'
+
+  - name: Invoice Processing
+    description: Track invoice processing stages
+    case_table: invoice
+    case_id: invoice_id
+    activities:
+      - name: Uploaded
+        filter: processing_status = 'pending'
+      - name: Processing
+        filter: processing_status = 'processing'
+      - name: Completed
+        filter: processing_status = 'completed'
+      - name: Failed
+        filter: processing_status = 'failed'
+
+# =============================================================================
+# FILTERS
+# =============================================================================
+filters:
+  - name: Date Range
+    type: date_range
+    field: invoice.invoice_date
+    default: last_30_days
+
+  - name: Carrier
+    type: dropdown
+    field: carrier.name
+    multi_select: true
+
+  - name: Anomaly Type
+    type: dropdown
+    field: anomaly.anomaly_type
+    options:
+      - duplicate
+      - rate_error
+      - late_delivery
+      - unauthorized_surcharge
+
+  - name: Claim Status
+    type: dropdown
+    field: claim.status
+    options:
+      - draft
+      - pending_approval
+      - submitted
+      - in_progress
+      - won
+      - lost
+      - withdrawn
+
+# =============================================================================
+# DASHBOARDS
+# =============================================================================
+dashboards:
+  - name: Recovery Overview
+    description: Main recovery metrics and KPIs
+    components:
+      - type: kpi_card
+        kpi: Total Identified
+        position: {row: 1, col: 1}
+
+      - type: kpi_card
+        kpi: Total Submitted
+        position: {row: 1, col: 2}
+
+      - type: kpi_card
+        kpi: Total Recovered
+        position: {row: 1, col: 3}
+
+      - type: kpi_card
+        kpi: Recovery Rate
+        position: {row: 1, col: 4}
+
+      - type: bar_chart
+        title: Anomalies by Type
+        dimension: anomaly.anomaly_type
+        measure: COUNT(anomaly.anomaly_id)
+        position: {row: 2, col: 1, width: 2}
+
+      - type: line_chart
+        title: Recovery Trend
+        dimension: invoice.invoice_date
+        measure: Total Recovered
+        granularity: week
+        position: {row: 2, col: 3, width: 2}
+
+  - name: Anomaly Queue
+    description: Review and process detected anomalies
+    components:
+      - type: table
+        title: Pending Anomalies
+        columns:
+          - anomaly.anomaly_type
+          - invoice.invoice_number
+          - anomaly.variance
+          - anomaly.confidence_score
+          - anomaly.status
+        filters:
+          - anomaly.status IN ('detected', 'validated')
+        sort: anomaly.variance DESC
+        actions:
+          - name: Validate
+            action: update_status
+            value: validated
+          - name: Dismiss
+            action: update_status
+            value: dismissed
+          - name: Create Claim
+            action: create_claim
+
+  - name: Claims Pipeline
+    description: Manage claims through their lifecycle
+    components:
+      - type: kanban
+        title: Claim Pipeline
+        group_by: claim.status
+        card_content:
+          - claim.claim_number
+          - claim.requested_credit
+          - anomaly.anomaly_type
+        swimlanes:
+          - draft
+          - pending_approval
+          - submitted
+          - in_progress
+          - won
+          - lost

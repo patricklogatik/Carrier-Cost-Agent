@@ -1,0 +1,1 @@
+"""Celonis configuration module."""

@@ -1,67 +1,84 @@
-"""Seed script to populate initial data including FedEx carrier."""
+"""Seed script to populate initial data in Celonis Data Pool."""
 
-import asyncio
+from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+import pandas as pd
+import structlog
 
-from src.core.config import settings
-from src.models.carrier import Carrier
+from config.celonis_config import get_celonis_connection, get_data_pool, get_table
 
-
-async def seed_carriers(session: AsyncSession) -> None:
-    """Seed carrier data."""
-    carriers = [
-        Carrier(
-            carrier_id=str(uuid4()),
-            name="FedEx",
-            code="FEDX",
-            portal_url="https://www.fedex.com/billing",
-            contact_email="billing@fedex.com",
-            is_active=True,
-        ),
-        Carrier(
-            carrier_id=str(uuid4()),
-            name="UPS",
-            code="UPS",
-            portal_url="https://www.ups.com/billing",
-            contact_email="billing@ups.com",
-            is_active=False,  # Not active for MVP
-        ),
-        Carrier(
-            carrier_id=str(uuid4()),
-            name="DHL Express",
-            code="DHL",
-            portal_url="https://www.dhl.com/billing",
-            contact_email="billing@dhl.com",
-            is_active=False,  # Not active for MVP
-        ),
-    ]
-
-    for carrier in carriers:
-        session.add(carrier)
-
-    await session.commit()
-    print(f"Seeded {len(carriers)} carriers")
+logger = structlog.get_logger(__name__)
 
 
-async def main() -> None:
+def seed_carriers(data_pool) -> int:
+    """Seed carrier data to Celonis Data Pool.
+
+    Args:
+        data_pool: Celonis Data Pool connection.
+
+    Returns:
+        Number of carriers seeded.
+    """
+    carrier_table = get_table("carrier", data_pool)
+
+    carriers = pd.DataFrame([
+        {
+            "carrier_id": str(uuid4()),
+            "name": "FedEx",
+            "code": "FEDX",
+            "portal_url": "https://www.fedex.com/billing",
+            "contact_email": "billing@fedex.com",
+            "is_active": True,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+        {
+            "carrier_id": str(uuid4()),
+            "name": "UPS",
+            "code": "UPS",
+            "portal_url": "https://www.ups.com/billing",
+            "contact_email": "billing@ups.com",
+            "is_active": False,  # Not active for MVP
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+        {
+            "carrier_id": str(uuid4()),
+            "name": "DHL Express",
+            "code": "DHL",
+            "portal_url": "https://www.dhl.com/billing",
+            "contact_email": "billing@dhl.com",
+            "is_active": False,  # Not active for MVP
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    ])
+
+    carrier_table.upsert(carriers, keys=["carrier_id"])
+    logger.info("Seeded carriers", count=len(carriers))
+
+    return len(carriers)
+
+
+def main() -> None:
     """Run seed scripts."""
-    # Create database URL for async
-    database_url = settings.database_url
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    logger.info("Starting seed script")
 
-    engine = create_async_engine(database_url, echo=True)
-    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        celonis = get_celonis_connection()
+        data_pool = get_data_pool(celonis)
 
-    async with async_session() as session:
-        print("Seeding carriers...")
-        await seed_carriers(session)
+        logger.info("Connected to Celonis Data Pool")
 
-    await engine.dispose()
-    print("Seed complete!")
+        carrier_count = seed_carriers(data_pool)
+
+        logger.info("Seed complete", carriers=carrier_count)
+
+    except Exception as e:
+        logger.error("Seed failed", error=str(e))
+        raise
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

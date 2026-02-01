@@ -1,261 +1,326 @@
 """Tests for anomaly detection rules."""
 
-from datetime import date
-from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
+import pandas as pd
+from datetime import date
+from uuid import uuid4
 
-from src.models.anomaly import AnomalyType
-from src.models.contract import ContractTerm, ParsingStatus, TermType
-from src.models.invoice import Invoice, InvoiceLine
-from src.models.shipment import Shipment
-from src.services.anomaly.detector import AnomalyDetector, DetectionContext
-from src.services.anomaly.rules.duplicate import DuplicateDetectionRule
-from src.services.anomaly.rules.late_delivery import LateDeliveryDetectionRule
-from src.services.anomaly.rules.rate_error import RateErrorDetectionRule
+from ml_workbench.anomaly_detection.rules.base import DetectionContext
+from ml_workbench.anomaly_detection.rules.duplicate import DuplicateChargeRule
+from ml_workbench.anomaly_detection.rules.rate_error import RateErrorRule
+from ml_workbench.anomaly_detection.rules.late_delivery import LateDeliveryRule
+from ml_workbench.anomaly_detection.rules.unauthorized_surcharge import UnauthorizedSurchargeRule
 
 
-class TestDuplicateDetectionRule:
+class TestDuplicateChargeRule:
     """Tests for duplicate charge detection."""
 
     @pytest.fixture
-    def rule(self) -> DuplicateDetectionRule:
+    def rule(self) -> DuplicateChargeRule:
         """Create rule instance."""
-        return DuplicateDetectionRule()
+        return DuplicateChargeRule()
 
-    @pytest.mark.asyncio
-    async def test_detect_duplicate_by_pro_number(self, rule: DuplicateDetectionRule):
-        """Test detecting duplicate by PRO number."""
-        # Create mock context
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
-        mock_invoice.invoice_number = "INV-001"
-
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.line_id = "line-1"
-        mock_line.pro_number = "PRO123456"
-        mock_line.tracking_number = None
-        mock_line.shipment_id = None
-        mock_line.charge_type = "freight"
-        mock_line.amount = Decimal("100.00")
-
-        # Mock duplicate found
-        mock_duplicate = MagicMock(spec=InvoiceLine)
-        mock_duplicate.line_id = "line-2"
-        mock_duplicate.pro_number = "PRO123456"
-        mock_duplicate.tracking_number = None
-        mock_duplicate.charge_type = "freight"
-        mock_duplicate.amount = Decimal("100.00")
-        mock_duplicate.invoice_id = "inv-2"
-
-        # Configure mock execute to return duplicate
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_duplicate
-        mock_db.execute = AsyncMock(return_value=mock_result)
+    def test_detect_duplicate_tracking_same_amount(self, rule: DuplicateChargeRule):
+        """Test detection of duplicate charges by tracking number."""
+        # Create context with duplicate charges
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "charge_type": "freight",
+                "amount": 75.00,
+            },
+            {
+                "line_id": "line-2",
+                "tracking_number": "794644790292",  # Same tracking
+                "charge_type": "freight",  # Same charge type
+                "amount": 75.00,  # Same amount
+            },
+        ])
 
         context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=pd.DataFrame(),
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
         )
 
-        result = await rule.detect(context)
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 1
+        assert anomalies[0].anomaly_type == "duplicate"
+        assert anomalies[0].variance == 75.00  # Duplicate amount
 
-        assert result is not None
-        assert result.anomaly_type == AnomalyType.DUPLICATE
-        assert result.variance == Decimal("100.00")
-        assert result.confidence_score >= Decimal("0.9")
-        assert result.duplicate_of_line_id == "line-2"
-
-    @pytest.mark.asyncio
-    async def test_no_duplicate_found(self, rule: DuplicateDetectionRule):
-        """Test when no duplicate is found."""
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.line_id = "line-1"
-        mock_line.pro_number = "PRO123456"
-        mock_line.tracking_number = None
-        mock_line.shipment_id = None
-        mock_line.charge_type = "freight"
-        mock_line.amount = Decimal("100.00")
-
-        # No duplicate found
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute = AsyncMock(return_value=mock_result)
+    def test_no_duplicates(self, rule: DuplicateChargeRule):
+        """Test no false positives when charges are unique."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "charge_type": "freight",
+                "amount": 75.00,
+            },
+            {
+                "line_id": "line-2",
+                "tracking_number": "794644790293",  # Different tracking
+                "charge_type": "freight",
+                "amount": 95.00,
+            },
+        ])
 
         context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=pd.DataFrame(),
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
         )
 
-        result = await rule.detect(context)
-        assert result is None
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 0
 
 
-class TestLateDeliveryDetectionRule:
-    """Tests for late delivery charge detection."""
-
-    @pytest.fixture
-    def rule(self) -> LateDeliveryDetectionRule:
-        """Create rule instance."""
-        return LateDeliveryDetectionRule()
-
-    @pytest.mark.asyncio
-    async def test_detect_false_late_charge(self, rule: LateDeliveryDetectionRule):
-        """Test detecting false late delivery charge."""
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
-
-        mock_shipment = MagicMock(spec=Shipment)
-        mock_shipment.shipment_id = "ship-1"
-        mock_shipment.pro_number = "PRO123"
-        mock_shipment.tracking_number = "TRACK123"
-        mock_shipment.service_level = "FedEx Ground"
-        mock_shipment.expected_delivery = date(2026, 1, 15)
-        mock_shipment.actual_delivery = date(2026, 1, 14)  # Delivered early!
-
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.line_id = "line-1"
-        mock_line.charge_type = "late_delivery"
-        mock_line.charge_description = "Late Delivery Fee"
-        mock_line.amount = Decimal("25.00")
-        mock_line.shipment = mock_shipment
-
-        context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
-        )
-
-        result = await rule.detect(context)
-
-        assert result is not None
-        assert result.anomaly_type == AnomalyType.LATE_DELIVERY
-        assert result.expected_amount == Decimal("0")
-        assert result.variance == Decimal("25.00")
-        assert result.confidence_score >= Decimal("0.9")
-
-    @pytest.mark.asyncio
-    async def test_valid_late_charge(self, rule: LateDeliveryDetectionRule):
-        """Test that actual late delivery is not flagged."""
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
-
-        mock_shipment = MagicMock(spec=Shipment)
-        mock_shipment.expected_delivery = date(2026, 1, 15)
-        mock_shipment.actual_delivery = date(2026, 1, 17)  # Actually late
-
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.charge_type = "late_delivery"
-        mock_line.charge_description = None
-        mock_line.amount = Decimal("25.00")
-        mock_line.shipment = mock_shipment
-
-        context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
-        )
-
-        result = await rule.detect(context)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_not_late_charge_type(self, rule: LateDeliveryDetectionRule):
-        """Test that non-late charges are ignored."""
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
-
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.charge_type = "freight"
-        mock_line.charge_description = "Base Transportation"
-        mock_line.shipment = None
-
-        context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
-        )
-
-        result = await rule.detect(context)
-        assert result is None
-
-
-class TestRateErrorDetectionRule:
+class TestRateErrorRule:
     """Tests for rate error detection."""
 
     @pytest.fixture
-    def rule(self) -> RateErrorDetectionRule:
+    def rule(self) -> RateErrorRule:
         """Create rule instance."""
-        return RateErrorDetectionRule()
+        return RateErrorRule()
 
-    @pytest.mark.asyncio
-    async def test_detect_rate_error(self, rule: RateErrorDetectionRule):
-        """Test detecting rate discrepancy."""
-        mock_db = AsyncMock()
-        mock_invoice = MagicMock(spec=Invoice)
+    def test_detect_rate_overcharge(self, rule: RateErrorRule):
+        """Test detection of rate overcharges."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "charge_type": "freight",
+                "amount": 100.00,  # Charged
+                "weight": 5.0,
+                "zone": "2",
+            },
+        ])
 
-        mock_shipment = MagicMock(spec=Shipment)
-        mock_shipment.ship_date = date(2026, 1, 10)
-
-        mock_line = MagicMock(spec=InvoiceLine)
-        mock_line.line_id = "line-1"
-        mock_line.service_level = "FedEx Ground"
-        mock_line.zone = "2"
-        mock_line.weight = Decimal("5.0")
-        mock_line.billed_weight = None
-        mock_line.charge_type = "freight"
-        mock_line.amount = Decimal("75.00")  # Overcharged
-        mock_line.ship_date = date(2026, 1, 10)
-        mock_line.shipment = mock_shipment
-
-        # Mock contract
-        mock_contract = MagicMock()
-        mock_contract.contract_id = "contract-1"
-        mock_contract.contract_number = "FEDX-2026"
-
-        # Mock term with lower rate
-        mock_term = MagicMock(spec=ContractTerm)
-        mock_term.term_id = "term-1"
-        mock_term.rate = Decimal("50.00")  # Contract rate
-        mock_term.rate_type = "flat"
-        mock_term.confidence_score = Decimal("0.95")
-        mock_term.validated = True
-        mock_term.source_page = 5
-        mock_term.source_text = "Ground Zone 2: $50.00"
-
-        # Configure mock executes
-        def mock_execute_side_effect(query):
-            result = MagicMock()
-            # Check if looking for contract or term
-            if "Contract" in str(query) or "contract" in str(query).lower():
-                result.scalar_one_or_none.return_value = mock_contract
-            else:
-                result.scalar_one_or_none.return_value = mock_term
-            return result
-
-        mock_db.execute = AsyncMock(side_effect=mock_execute_side_effect)
+        # Contract says rate should be $5.50/lb
+        contract_terms_df = pd.DataFrame([
+            {
+                "term_id": "term-1",
+                "term_type": "rate",
+                "service_level": "FedEx Ground",
+                "zone": "2",
+                "weight_min": 0,
+                "weight_max": 10,
+                "rate": 5.50,
+                "rate_type": "per_lb",
+            },
+        ])
 
         context = DetectionContext(
-            invoice=mock_invoice,
-            line=mock_line,
-            carrier_id="carrier-1",
-            db=mock_db,
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=contract_terms_df,
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
         )
 
-        result = await rule.detect(context)
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 1
+        assert anomalies[0].anomaly_type == "rate_error"
+        assert anomalies[0].expected_amount == 27.50  # 5.0 * 5.50
+        assert anomalies[0].actual_amount == 100.00
+        assert anomalies[0].variance == 72.50  # Overcharged
 
-        assert result is not None
-        assert result.anomaly_type == AnomalyType.RATE_ERROR
-        assert result.expected_amount == Decimal("50.00")
-        assert result.actual_amount == Decimal("75.00")
-        assert result.variance == Decimal("25.00")
+    def test_no_rate_error_when_correct(self, rule: RateErrorRule):
+        """Test no false positives when rate is correct."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "charge_type": "freight",
+                "amount": 27.50,  # Correct rate
+                "weight": 5.0,
+                "zone": "2",
+            },
+        ])
+
+        contract_terms_df = pd.DataFrame([
+            {
+                "term_id": "term-1",
+                "term_type": "rate",
+                "service_level": "FedEx Ground",
+                "zone": "2",
+                "weight_min": 0,
+                "weight_max": 10,
+                "rate": 5.50,
+                "rate_type": "per_lb",
+            },
+        ])
+
+        context = DetectionContext(
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=contract_terms_df,
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
+        )
+
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 0
+
+
+class TestLateDeliveryRule:
+    """Tests for late delivery detection."""
+
+    @pytest.fixture
+    def rule(self) -> LateDeliveryRule:
+        """Create rule instance."""
+        return LateDeliveryRule()
+
+    def test_detect_late_delivery_charge(self, rule: LateDeliveryRule):
+        """Test detection of charges for late deliveries."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "charge_type": "freight",
+                "amount": 75.00,
+            },
+        ])
+
+        # Shipment was delivered late
+        shipments_df = pd.DataFrame([
+            {
+                "shipment_id": "ship-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "expected_delivery": date(2026, 1, 15),
+                "actual_delivery": date(2026, 1, 20),  # 5 days late
+            },
+        ])
+
+        context = DetectionContext(
+            invoice_lines=lines_df,
+            shipments=shipments_df,
+            contract_terms=pd.DataFrame(),
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
+        )
+
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 1
+        assert anomalies[0].anomaly_type == "late_delivery"
+        assert anomalies[0].variance == 75.00  # Full charge for late delivery
+
+    def test_no_anomaly_for_on_time_delivery(self, rule: LateDeliveryRule):
+        """Test no anomaly when delivery is on time."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "charge_type": "freight",
+                "amount": 75.00,
+            },
+        ])
+
+        shipments_df = pd.DataFrame([
+            {
+                "shipment_id": "ship-1",
+                "tracking_number": "794644790292",
+                "service_level": "FedEx Ground",
+                "expected_delivery": date(2026, 1, 15),
+                "actual_delivery": date(2026, 1, 14),  # Early!
+            },
+        ])
+
+        context = DetectionContext(
+            invoice_lines=lines_df,
+            shipments=shipments_df,
+            contract_terms=pd.DataFrame(),
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
+        )
+
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 0
+
+
+class TestUnauthorizedSurchargeRule:
+    """Tests for unauthorized surcharge detection."""
+
+    @pytest.fixture
+    def rule(self) -> UnauthorizedSurchargeRule:
+        """Create rule instance."""
+        return UnauthorizedSurchargeRule()
+
+    def test_detect_unauthorized_surcharge(self, rule: UnauthorizedSurchargeRule):
+        """Test detection of surcharges not in contract."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "Unknown Surcharge",
+                "charge_type": "surcharge",
+                "amount": 25.00,
+            },
+        ])
+
+        # Contract only has fuel surcharge
+        contract_terms_df = pd.DataFrame([
+            {
+                "term_id": "term-1",
+                "term_type": "surcharge",
+                "service_level": "Fuel Surcharge",
+                "rate": 15.0,
+                "rate_type": "percentage",
+            },
+        ])
+
+        context = DetectionContext(
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=contract_terms_df,
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
+        )
+
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 1
+        assert anomalies[0].anomaly_type == "unauthorized_surcharge"
+        assert anomalies[0].variance == 25.00
+
+    def test_authorized_surcharge_passes(self, rule: UnauthorizedSurchargeRule):
+        """Test no anomaly for authorized surcharges."""
+        lines_df = pd.DataFrame([
+            {
+                "line_id": "line-1",
+                "tracking_number": "794644790292",
+                "service_level": "Fuel Surcharge",
+                "charge_type": "fuel_surcharge",
+                "amount": 11.25,
+            },
+        ])
+
+        contract_terms_df = pd.DataFrame([
+            {
+                "term_id": "term-1",
+                "term_type": "surcharge",
+                "service_level": "Fuel Surcharge",
+                "rate": 15.0,
+                "rate_type": "percentage",
+            },
+        ])
+
+        context = DetectionContext(
+            invoice_lines=lines_df,
+            shipments=pd.DataFrame(),
+            contract_terms=contract_terms_df,
+            carrier_id="carrier-001",
+            invoice_id="invoice-001",
+        )
+
+        anomalies = rule.detect(context)
+        assert len(anomalies) == 0

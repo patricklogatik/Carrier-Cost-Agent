@@ -1,6 +1,6 @@
 # Celonis Carrier Cost Agent
 
-AI-powered carrier invoice validation and cost recovery solution built on the Celonis platform.
+AI-powered carrier invoice validation and cost recovery solution built natively on the Celonis platform.
 
 ## Overview
 
@@ -12,49 +12,67 @@ The Carrier Cost Agent automates freight audit by:
 
 **Target Impact:** 3-7% of shipment spend recovered/prevented
 
+## Architecture
+
+This is a **Celonis-native** application leveraging:
+- **PyCelonis** - Official Python SDK for Celonis EMS
+- **Celonis Data Pool (Vertica)** - Data storage
+- **Celonis ML Workbench** - Python execution environment
+- **pycelonis_llm** - Native Celonis LLM integration for GenAI features
+- **Celonis Studio** - Dashboard and UI
+- **Data Ingestion API** - Real-time data push from TMS/invoices
+
 ## Project Structure
 
 ```
 carrier-cost-agent/
-├── src/
-│   ├── api/                    # REST API endpoints
-│   │   ├── routes/             # Route handlers
-│   │   ├── middleware/         # Auth, validation, logging
-│   │   └── schemas/            # Pydantic request/response models
-│   ├── services/               # Business logic services
-│   │   ├── invoice/            # Invoice ingestion & processing
-│   │   ├── contract/           # Contract parsing & management
-│   │   ├── anomaly/            # Anomaly detection engine
-│   │   ├── claim/              # Claim generation & management
-│   │   └── analytics/          # Dashboard & reporting
-│   ├── models/                 # Database models (SQLAlchemy)
-│   ├── core/                   # Core utilities
-│   │   ├── config.py           # Configuration management
-│   │   ├── security.py         # Authentication & authorization
-│   │   └── logging.py          # Logging configuration
-│   └── integrations/           # External system connectors
-│       ├── pdf/                # PDF parsing (OCR, text extraction)
-│       ├── genai/              # LLM integration for contract parsing
-│       └── storage/            # Object storage (Celonis/S3)
-├── tests/
+├── config/                     # Celonis connection configuration
+│   ├── celonis_config.py       # PyCelonis connection setup
+│   └── settings.py             # Application settings
+├── data_pool/                  # Celonis Data Pool
+│   └── schema/                 # Vertica DDL schemas
+│       ├── carrier.sql
+│       ├── contract.sql
+│       ├── invoice.sql
+│       ├── shipment.sql
+│       ├── anomaly.sql
+│       └── claim.sql
+├── ml_workbench/               # Celonis ML Workbench components
+│   ├── anomaly_detection/      # Anomaly detection engine
+│   │   ├── rules/              # Detection rules
+│   │   │   ├── duplicate.py
+│   │   │   ├── rate_error.py
+│   │   │   ├── late_delivery.py
+│   │   │   └── unauthorized_surcharge.py
+│   │   ├── detector.py         # Main detector class
+│   │   └── runner.py           # ML Workbench entry point
+│   ├── contract_parser/        # Contract parsing with pycelonis_llm
+│   │   ├── parser.py
+│   │   └── runner.py
+│   ├── claim_generator/        # Claim generation with pycelonis_llm
+│   │   ├── generator.py
+│   │   └── runner.py
+│   └── invoice_parser/         # Invoice PDF parsing
+│       ├── extractor.py
+│       └── parser.py
+├── ingestion/                  # Data Ingestion API connectors
+│   ├── invoice_connector.py    # Invoice data ingestion
+│   └── tms_connector.py        # TMS shipment data ingestion
+├── studio/                     # Celonis Studio configuration
+│   └── knowledge_model.yaml    # KPIs, process views, dashboards
+├── tests/                      # Test suite
 │   ├── unit/                   # Unit tests
-│   ├── integration/            # Integration tests
-│   └── fixtures/               # Test data and fixtures
-├── migrations/                 # Database migrations (Alembic)
-├── config/                     # Configuration files
-├── docs/                       # Documentation
-│   ├── ARCHITECTURE.md         # Technical architecture
-│   ├── PRD.md                  # Product requirements
-│   └── API.md                  # API documentation
+│   └── conftest.py             # Test fixtures
 ├── scripts/                    # Utility scripts
-├── .github/                    # GitHub Actions CI/CD
-│   └── workflows/
-├── requirements.txt            # Python dependencies
-├── requirements-dev.txt        # Development dependencies
-├── pyproject.toml              # Python project configuration
-├── .env.example                # Environment variables template
-├── .gitignore                  # Git ignore patterns
-└── README.md                   # This file
+│   └── seed_data.py            # Data Pool seeding
+├── docs/                       # Documentation
+│   ├── ARCHITECTURE.md
+│   └── PRD.md
+├── .github/workflows/          # CI/CD
+├── requirements.txt            # Celonis dependencies
+├── pyproject.toml              # Python project config
+├── .env.celonis.example        # Celonis environment template
+└── README.md
 ```
 
 ## Quick Start
@@ -62,8 +80,9 @@ carrier-cost-agent/
 ### Prerequisites
 
 - Python 3.11+
-- PostgreSQL 15+ (or Celonis Data Pool access)
-- Redis (for job queue)
+- Celonis EMS access with API token
+- Celonis Data Pool (provisioned)
+- Celonis ML Workbench (optional, for production execution)
 
 ### Installation
 
@@ -85,20 +104,40 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt  # For development
 ```
 
-4. Configure environment:
+4. Configure Celonis connection:
 ```bash
-cp .env.example .env
-# Edit .env with your configuration
+cp .env.celonis.example .env
+# Edit .env with your Celonis credentials:
+# - CELONIS_BASE_URL
+# - CELONIS_API_TOKEN
+# - CELONIS_DATA_POOL_ID
 ```
 
-5. Run database migrations:
+5. Initialize Data Pool tables:
 ```bash
-alembic upgrade head
+# Execute DDL scripts in data_pool/schema/ against your Celonis Data Pool
 ```
 
-6. Start the development server:
+6. Seed initial data (optional):
 ```bash
-uvicorn src.api.main:app --reload
+python scripts/seed_data.py
+```
+
+### Running Locally
+
+Run anomaly detection:
+```python
+from ml_workbench.anomaly_detection.runner import run_detection
+
+results = run_detection(invoice_id="your-invoice-id")
+print(f"Found {len(results)} anomalies")
+```
+
+Parse a contract:
+```python
+from ml_workbench.contract_parser.runner import parse_contract
+
+terms = parse_contract(contract_id="your-contract-id", pdf_path="/path/to/contract.pdf")
 ```
 
 ### Running Tests
@@ -108,17 +147,41 @@ uvicorn src.api.main:app --reload
 pytest
 
 # Run with coverage
-pytest --cov=src --cov-report=html
+pytest --cov=ml_workbench --cov=config --cov=ingestion
 
 # Run specific test file
 pytest tests/unit/test_anomaly_detection.py
 ```
 
-## API Documentation
+## Celonis Integration
 
-Once the server is running, access the API documentation at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+### Data Pool Tables
+
+| Table | Description |
+|-------|-------------|
+| carrier | Carrier master data (FedEx, UPS, etc.) |
+| contract | Carrier contract metadata |
+| contract_term | Extracted contract terms (rates, surcharges, SLAs) |
+| invoice | Carrier invoice headers |
+| invoice_line | Invoice line items |
+| shipment | Shipment data from TMS |
+| anomaly | Detected billing anomalies |
+| claim | Carrier dispute claims |
+| claim_message | Claim conversation history |
+
+### Knowledge Model KPIs
+
+- **Total Identified** - Variance amount of detected anomalies
+- **Total Submitted** - Requested credit for submitted claims
+- **Total Recovered** - Credit from won claims
+- **Recovery Rate** - Percentage recovered vs submitted
+- **Win Rate** - Percentage of claims won
+
+### ML Workbench Components
+
+1. **Anomaly Detection** - Runs on invoice ingestion
+2. **Contract Parser** - Extracts terms using pycelonis_llm
+3. **Claim Generator** - Creates claims with LLM-enhanced text
 
 ## Development
 
@@ -130,47 +193,42 @@ This project uses:
 - **Flake8** for linting
 - **mypy** for type checking
 
-Run formatting and linting:
 ```bash
 # Format code
-black src tests
-isort src tests
+black ml_workbench config ingestion tests
+isort ml_workbench config ingestion tests
 
 # Lint
-flake8 src tests
-mypy src
+flake8 ml_workbench config ingestion tests
+mypy ml_workbench config ingestion
 ```
 
 ### Pre-commit Hooks
 
-Install pre-commit hooks to ensure code quality:
 ```bash
 pre-commit install
 ```
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical architecture.
-
-## Product Requirements
-
-See [docs/PRD.md](docs/PRD.md) for full product requirements document.
 
 ## MVP Scope (Phase 1)
 
 **Target:** Celosphere 2026 | **Pilot:** Ingka/IKEA with FedEx US
 
 ### Features
-- [x] Invoice ingestion (PDF upload)
+- [x] Invoice ingestion (PDF upload to Celonis)
 - [x] PDF text extraction and parsing
 - [x] FedEx invoice field extraction
-- [x] Shipment data import (CSV/JSON)
+- [x] Shipment data import via Data Ingestion API
 - [x] Invoice-shipment matching
-- [x] Contract upload and GenAI parsing
+- [x] Contract upload and pycelonis_llm parsing
 - [x] Anomaly detection (duplicates, rate errors, late delivery, unauthorized surcharges)
 - [x] Claim generation with contract citations
-- [x] Claim review and approval workflow
-- [x] Recovery dashboard
+- [ ] Celonis Studio dashboards (Recovery Overview, Anomaly Queue, Claims Pipeline)
+- [ ] Claim review and approval workflow in Studio
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) - Technical architecture details
+- [PRD](docs/PRD.md) - Product requirements document
 
 ## License
 
